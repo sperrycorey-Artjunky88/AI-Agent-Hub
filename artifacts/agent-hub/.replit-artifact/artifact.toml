@@ -1,0 +1,28 @@
+kind = "web"
+previewPath = "/"
+title = "AI Agent Hub"
+description = "A personal command center for organizing AI assistants and bots, with dedicated profiles for Muse Gemini, ChatGPT, and six Grok bots, plus room to add more."
+version = "1.0.0"
+id = "artifacts/agent-hub"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18509
+
+[services.development]
+run = "pnpm --filter @workspace/agent-hub run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/agent-hub", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/agent-hub/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18509"
+BASE_PATH = "/"
