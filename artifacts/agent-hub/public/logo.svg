@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 180 48" role="img" aria-labelledby="title">
+  <title id="title">Commonroom</title>
+  <rect x="2" y="4" width="40" height="40" rx="12" fill="#a7d8bb"/>
+  <path d="M15 16h14l4 4v12H15z" fill="none" stroke="#292739" stroke-width="2" stroke-linejoin="round"/>
+  <path d="M20 12h12l4 4v12M19 21h10M19 26h10" fill="none" stroke="#292739" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+  <text x="53" y="27" fill="#302d3b" font-family="Georgia,serif" font-size="21" font-weight="700" letter-spacing="-1">commonroom</text>
+  <text x="54" y="39" fill="#817c8a" font-family="monospace" font-size="6.5" font-weight="700" letter-spacing="1.3">YOUR AI HOME BASE</text>
+</svg>

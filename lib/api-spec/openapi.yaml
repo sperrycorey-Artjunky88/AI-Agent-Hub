@@ -24,6 +24,180 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/HealthStatus"
+  /agent-roster:
+    get:
+      operationId: getAgentRoster
+      tags: [agent-roster]
+      summary: Get the signed-in user's AI agent roster
+      responses:
+        "200":
+          description: The user's roster, or null when no roster has been saved
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRoster"
+        "401":
+          description: Sign-in is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    put:
+      operationId: saveAgentRoster
+      tags: [agent-roster]
+      summary: Save the signed-in user's AI agent roster
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AgentRosterInput"
+      responses:
+        "200":
+          description: The saved roster
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentRoster"
+        "400":
+          description: The roster is invalid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Sign-in is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /tasks:
+    get:
+      operationId: listTasks
+      tags: [tasks]
+      summary: List the signed-in user's AI work queue
+      responses:
+        "200":
+          description: The user's tasks
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TaskListResponse"
+        "401":
+          description: Sign-in is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    post:
+      operationId: createTask
+      tags: [tasks]
+      summary: Add a task to the signed-in user's work queue
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskInput"
+      responses:
+        "201":
+          description: The new task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentTask"
+        "400":
+          description: The task is invalid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Sign-in is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /tasks/{taskId}:
+    parameters:
+      - name: taskId
+        in: path
+        required: true
+        schema:
+          type: integer
+          minimum: 1
+    patch:
+      operationId: updateTask
+      tags: [tasks]
+      summary: Update a task owned by the signed-in user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TaskUpdate"
+      responses:
+        "200":
+          description: The updated task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AgentTask"
+        "400":
+          description: The task update is invalid
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "401":
+          description: Sign-in is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: The task was not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+    delete:
+      operationId: deleteTask
+      tags: [tasks]
+      summary: Remove a task owned by the signed-in user
+      responses:
+        "204":
+          description: The task was removed
+        "401":
+          description: Sign-in is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "404":
+          description: The task was not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+  /activity:
+    get:
+      operationId: listActivity
+      tags: [activity]
+      summary: List recent changes in the signed-in user's AI hub
+      responses:
+        "200":
+          description: Recent activity
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ActivityListResponse"
+        "401":
+          description: Sign-in is required
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
 components:
   schemas:
     HealthStatus:
@@ -33,4 +207,167 @@ components:
           type: string
       required:
         - status
+    AgentStatus:
+      type: string
+      enum: [Ready, Working, Away]
+    AgentColor:
+      type: string
+      enum: [lilac, mint, coral, sky, gold, rose, teal, lavender]
+    AgentRosterAgent:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: string
+          minLength: 1
+          maxLength: 100
+        name:
+          type: string
+          minLength: 1
+          maxLength: 42
+        role:
+          type: string
+          maxLength: 120
+        status:
+          $ref: "#/components/schemas/AgentStatus"
+        color:
+          $ref: "#/components/schemas/AgentColor"
+        launchUrl:
+          type: ["string", "null"]
+          format: uri
+          maxLength: 2048
+      required: [id, name, role, status, color]
+    AgentRoster:
+      type: object
+      additionalProperties: false
+      properties:
+        agents:
+          type: ["array", "null"]
+          items:
+            $ref: "#/components/schemas/AgentRosterAgent"
+        updatedAt:
+          type: ["string", "null"]
+          format: date-time
+      required: [agents, updatedAt]
+    AgentRosterInput:
+      type: object
+      additionalProperties: false
+      properties:
+        agents:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentRosterAgent"
+          maxItems: 500
+      required: [agents]
+    TaskStatus:
+      type: string
+      enum: [Queued, "In progress", Done]
+    TaskPriority:
+      type: string
+      enum: [Low, Normal, High]
+    ActivityKind:
+      type: string
+      enum: [TaskCreated, TaskUpdated, TaskCompleted, TaskDeleted, RosterUpdated]
+    AgentTask:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+          minLength: 1
+          maxLength: 120
+        details:
+          type: string
+          maxLength: 1000
+        assignedAgentId:
+          type: ["string", "null"]
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        priority:
+          $ref: "#/components/schemas/TaskPriority"
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+      required: [id, title, details, assignedAgentId, status, priority, createdAt, updatedAt]
+    TaskInput:
+      type: object
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 120
+        details:
+          type: string
+          maxLength: 1000
+        assignedAgentId:
+          type: ["string", "null"]
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        priority:
+          $ref: "#/components/schemas/TaskPriority"
+      required: [title, details, assignedAgentId, status, priority]
+    TaskUpdate:
+      type: object
+      additionalProperties: false
+      properties:
+        title:
+          type: string
+          minLength: 1
+          maxLength: 120
+        details:
+          type: string
+          maxLength: 1000
+        assignedAgentId:
+          type: ["string", "null"]
+        status:
+          $ref: "#/components/schemas/TaskStatus"
+        priority:
+          $ref: "#/components/schemas/TaskPriority"
+    TaskListResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/AgentTask"
+      required: [tasks]
+    ActivityEvent:
+      type: object
+      additionalProperties: false
+      properties:
+        id:
+          type: integer
+        kind:
+          $ref: "#/components/schemas/ActivityKind"
+        message:
+          type: string
+          maxLength: 280
+        taskId:
+          type: ["integer", "null"]
+        createdAt:
+          type: string
+          format: date-time
+      required: [id, kind, message, taskId, createdAt]
+    ActivityListResponse:
+      type: object
+      additionalProperties: false
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/ActivityEvent"
+      required: [events]
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: string
+      required: [error]
 
