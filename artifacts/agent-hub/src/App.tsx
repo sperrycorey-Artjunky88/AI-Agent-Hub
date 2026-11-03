@@ -116,15 +116,54 @@ const seedAgents: Agent[] = [
   { id: 'grok-05', name: 'Grok 05', role: 'Creative studio · concepts, names, and what-ifs', status: 'Away', color: 'teal' },
   { id: 'grok-06', name: 'Grok 06', role: 'Quiet focus · thoughtful second opinions', status: 'Ready', color: 'lavender' },
 ];
+function isSafeLaunchUrl(value: string): boolean {
+  if (!value) return true;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'http:' || url.protocol === 'https:';
+  } catch {
+    return false;
+  }
+}
+
 const agentSchema = z.object({
   name: z.string().trim().min(1, 'Give this collaborator a name.').max(42, 'Keep the name under 42 characters.'),
   role: z.string().max(120, 'Keep notes under 120 characters.'),
   status: z.enum(['Ready', 'Working', 'Away']),
-  launchUrl: z.string().trim().refine((value) => !value || /^https?:\/\/\S+$/i.test(value), 'Use a full HTTP or HTTPS link.').max(2048, 'Keep the link under 2048 characters.'),
+  launchUrl: z.string().trim().max(2048, 'Keep the link under 2048 characters.').refine(isSafeLaunchUrl, 'Use a full HTTP or HTTPS link.'),
 });
 type AgentValues = z.infer<typeof agentSchema>;
 const colors: Agent['color'][] = ['lilac', 'mint', 'coral', 'sky', 'gold', 'rose', 'teal', 'lavender'];
+const taskStatuses: TaskStatus[] = ['Queued', 'In progress', 'Done'];
+const taskPriorities: TaskPriority[] = ['Low', 'Normal', 'High'];
+const taskSchema = z.object({
+  title: z.string().trim().min(1, 'Give this task a name.').max(120, 'Keep the title under 120 characters.'),
+  details: z.string().max(1000, 'Keep details under 1000 characters.'),
+  assignedAgentId: z.string(),
+  status: z.enum(['Queued', 'In progress', 'Done']),
+  priority: z.enum(['Low', 'Normal', 'High']),
+});
+type TaskValues = z.infer<typeof taskSchema>;
 const makeId = () => `agent-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+
+function safeLaunchUrl(value: string | null | undefined): string | null {
+  if (!value || !isSafeLaunchUrl(value)) return null;
+  return value;
+}
+
+function formatActivityTime(event: ActivityEvent): string {
+  const date = new Date(event.createdAt);
+  const elapsed = Math.max(0, Date.now() - date.getTime());
+  if (!Number.isFinite(elapsed)) return 'Recently';
+  const minutes = Math.floor(elapsed / 60_000);
+  if (minutes < 1) return 'Just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 7) return `${days}d ago`;
+  return new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' }).format(date);
+}
 
 function readLocalRoster(): Agent[] | null {
   try {
@@ -159,7 +198,7 @@ function Home() {
         <div className="public-hero-copy">
           <div className="eyebrow"><span className="eyebrow-line" /> A MORE PERSONAL WAY TO WORK WITH AI</div>
           <h1>Your minds,<br />in <em>one room.</em></h1>
-          <p>Keep the AI collaborators you work with close. Give each a role, set the pace, and pick up your roster wherever the day takes you.</p>
+          <p>Keep your AI collaborators close, open each assistant from one click, and track the work you want to move forward wherever you sign in.</p>
           <div className="public-hero-actions">
             <Link href="/sign-up" className="public-cta large" data-testid="link-get-started">Create your private room <span>→</span></Link>
             <span className="private-caption"><LockKeyhole size={14} /> Private to your account</span>
@@ -179,7 +218,7 @@ function Home() {
       </section>
       <section className="public-details">
         <div className="detail-intro"><span className="detail-index">01 / YOUR SPACE</span><h2>One steady place<br />for a changing crew.</h2></div>
-        <div className="detail-copy"><p>AI tools come and go. Your working rhythm is yours to keep. Commonroom brings your collaborators, their roles, and your own status notes into one private roster.</p><div className="detail-benefits"><span><ShieldCheck size={17} /> Your roster follows your account</span><span><Layers3 size={17} /> No provider connections, just your notes</span></div></div>
+        <div className="detail-copy"><p>AI tools come and go. Your working rhythm is yours to keep. Commonroom brings your assistants, launch links, personal work queue, and recent activity into one private workspace.</p><div className="detail-benefits"><span><ShieldCheck size={17} /> Your workspace follows your account</span><span><Layers3 size={17} /> Tasks are tracked here, not sent automatically</span></div></div>
       </section>
       <footer className="public-footer"><span>COMMONROOM <i>·</i> YOUR PERSONAL AI ROSTER</span><span>Your room, wherever you sign in.</span></footer>
     </main>
@@ -189,7 +228,16 @@ function Home() {
 function RosterManager() {
   const queryClient = useQueryClient();
   const rosterQuery = useGetAgentRoster({ query: { queryKey: getGetAgentRosterQueryKey() } });
+  const tasksQuery = useListTasks({
+    query: { queryKey: getListTasksQueryKey(), refetchInterval: 20_000 },
+  });
+  const activityQuery = useListActivity({
+    query: { queryKey: getListActivityQueryKey(), refetchInterval: 20_000 },
+  });
   const saveRoster = useSaveAgentRoster();
+  const createTaskMutation = useCreateTask();
+  const updateTaskMutation = useUpdateTask();
+  const deleteTaskMutation = useDeleteTask();
   const roster = rosterQuery.data;
   const [agents, setAgents] = useState<Agent[] | null>(null);
   const [migrationRoster, setMigrationRoster] = useState<Agent[] | null>(null);
@@ -200,9 +248,16 @@ function RosterManager() {
   const [editing, setEditing] = useState<Agent | null>(null);
   const [view, setView] = useState<'grid' | 'list'>('grid');
   const [saveError, setSaveError] = useState('');
+  const [taskDialogOpen, setTaskDialogOpen] = useState(false);
+  const [editingTask, setEditingTask] = useState<AgentTask | null>(null);
+  const [taskError, setTaskError] = useState('');
   const form = useForm<AgentValues>({
     resolver: zodResolver(agentSchema),
-    defaultValues: { name: '', role: '', status: 'Ready' },
+    defaultValues: { name: '', role: '', status: 'Ready', launchUrl: '' },
+  });
+  const taskForm = useForm<TaskValues>({
+    resolver: zodResolver(taskSchema),
+    defaultValues: { title: '', details: '', assignedAgentId: '', status: 'Queued', priority: 'Normal' },
   });
 
   useEffect(() => {
@@ -222,9 +277,15 @@ function RosterManager() {
         setSelectedChoice(null);
         if (roster?.agents === null) clearMigratedLocalRoster();
         queryClient.setQueryData(getGetAgentRosterQueryKey(), saved);
+        void queryClient.invalidateQueries({ queryKey: getListActivityQueryKey() });
       },
       onError: () => setSaveError('Your changes could not sync. Please try again.'),
     });
+  };
+
+  const refreshTaskData = () => {
+    void queryClient.invalidateQueries({ queryKey: getListTasksQueryKey() });
+    void queryClient.invalidateQueries({ queryKey: getListActivityQueryKey() });
   };
 
   const counts = useMemo(() => {
@@ -244,22 +305,24 @@ function RosterManager() {
     ));
   }, [agents, filter, search]);
   const isSaving = saveRoster.isPending;
+  const isTaskSaving = createTaskMutation.isPending || updateTaskMutation.isPending || deleteTaskMutation.isPending;
 
   const openCreate = () => {
     setEditing(null);
-    form.reset({ name: '', role: '', status: 'Ready' });
+    form.reset({ name: '', role: '', status: 'Ready', launchUrl: '' });
     setDialogOpen(true);
   };
   const openEdit = (agent: Agent) => {
     setEditing(agent);
-    form.reset({ name: agent.name, role: agent.role, status: agent.status });
+    form.reset({ name: agent.name, role: agent.role, status: agent.status, launchUrl: agent.launchUrl ?? '' });
     setDialogOpen(true);
   };
   const saveAgent = (values: AgentValues) => {
     const current = agents ?? [];
+    const normalized = { ...values, launchUrl: values.launchUrl.trim() || null };
     const next = editing
-      ? current.map((agent) => agent.id === editing.id ? { ...agent, ...values } : agent)
-      : [...current, { ...values, id: makeId(), color: colors[current.length % colors.length] }];
+      ? current.map((agent) => agent.id === editing.id ? { ...agent, ...normalized } : agent)
+      : [...current, { ...normalized, id: makeId(), color: colors[current.length % colors.length] }];
     persist(next);
     setDialogOpen(false);
   };
@@ -270,6 +333,67 @@ function RosterManager() {
   };
   const updateStatus = (agent: Agent, status: AgentStatus) => {
     persist((agents ?? []).map((item) => item.id === agent.id ? { ...item, status } : item));
+  };
+
+  const openCreateTask = () => {
+    setEditingTask(null);
+    setTaskError('');
+    taskForm.reset({ title: '', details: '', assignedAgentId: '', status: 'Queued', priority: 'Normal' });
+    setTaskDialogOpen(true);
+  };
+  const openEditTask = (task: AgentTask) => {
+    setEditingTask(task);
+    setTaskError('');
+    taskForm.reset({
+      title: task.title,
+      details: task.details,
+      assignedAgentId: task.assignedAgentId ?? '',
+      status: task.status,
+      priority: task.priority,
+    });
+    setTaskDialogOpen(true);
+  };
+  const finishTaskSave = () => {
+    setTaskDialogOpen(false);
+    setEditingTask(null);
+    taskForm.reset({ title: '', details: '', assignedAgentId: '', status: 'Queued', priority: 'Normal' });
+    refreshTaskData();
+  };
+  const saveTask = (values: TaskValues) => {
+    setTaskError('');
+    const data: TaskInput = {
+      title: values.title.trim(),
+      details: values.details.trim(),
+      assignedAgentId: values.assignedAgentId || null,
+      status: values.status,
+      priority: values.priority,
+    };
+    if (editingTask) {
+      updateTaskMutation.mutate({ taskId: editingTask.id, data }, {
+        onSuccess: finishTaskSave,
+        onError: () => setTaskError('The task could not be saved. Please try again.'),
+      });
+      return;
+    }
+    createTaskMutation.mutate({ data }, {
+      onSuccess: finishTaskSave,
+      onError: () => setTaskError('The task could not be added. Please try again.'),
+    });
+  };
+  const changeTaskStatus = (task: AgentTask, status: TaskStatus) => {
+    setTaskError('');
+    updateTaskMutation.mutate({ taskId: task.id, data: { status } }, {
+      onSuccess: refreshTaskData,
+      onError: () => setTaskError('The task status could not be updated. Please try again.'),
+    });
+  };
+  const removeTask = (task: AgentTask) => {
+    if (!window.confirm(`Remove “${task.title}” from your work queue?`)) return;
+    setTaskError('');
+    deleteTaskMutation.mutate({ taskId: task.id }, {
+      onSuccess: refreshTaskData,
+      onError: () => setTaskError('The task could not be removed. Please try again.'),
+    });
   };
 
   if (rosterQuery.isLoading || !roster) {
@@ -313,12 +437,17 @@ function RosterManager() {
   }
 
   const rosterAgents = agents ?? [];
+  const tasks = tasksQuery.data?.tasks ?? [];
+  const activityEvents = activityQuery.data?.events ?? [];
+  const agentNames = new Map(rosterAgents.map((agent) => [agent.id, agent.name]));
   return (
     <div className="hub-shell">
       <aside className="sidebar">
         <BrandLockup />
         <div className="side-section-label">WORKSPACE</div>
         <div className="side-link active" data-testid="nav-roster"><Users size={17} /><span>My collaborators</span><span className="nav-count">{rosterAgents.length}</span></div>
+        <a className="side-link" href="#work-queue" data-testid="nav-work-queue"><Layers3 size={17} /><span>Work queue</span><span className="nav-count">{tasks.filter((task) => task.status !== 'Done').length}</span></a>
+        <a className="side-link" href="#activity-feed" data-testid="nav-activity"><Clock3 size={17} /><span>Recent activity</span></a>
         <div className="sidebar-bottom">
           <div className="capacity-card"><div className="capacity-top"><span>ROOM TO GROW</span><span>{rosterAgents.length} / 12</span></div><div className="capacity-track"><div style={{ width: `${Math.min(100, rosterAgents.length / 12 * 100)}%` }} /></div><p>Your roster has space for more voices.</p></div>
           <div className="privacy-note"><span className="privacy-dot" /><span>Private to your account</span></div>
@@ -327,7 +456,7 @@ function RosterManager() {
       <main className="main-area">
         <header className="topbar">
           <div className="breadcrumb"><span>Workspace</span><span className="crumb-slash">/</span><strong>My collaborators</strong></div>
-          <div className="topbar-right"><span className="sync-pill"><LockKeyhole size={12} /> {isSaving ? 'SAVING' : 'PRIVATE SYNC'}</span><button className="help-button" aria-label="About this hub" data-testid="button-about" onClick={() => window.alert('Commonroom is your private roster for AI collaborators. Your names, notes, and statuses sync to your account across devices.') }><CircleHelp size={18} /></button><UserProfile /><SignOutAction /></div>
+        <div className="topbar-right"><span className="sync-pill"><LockKeyhole size={12} /> {isSaving || isTaskSaving ? 'SAVING' : 'PRIVATE SYNC'}</span><button className="help-button" aria-label="About this hub" data-testid="button-about" onClick={() => window.alert('Commonroom keeps your roster, custom assistant links, manually tracked tasks, and recent activity private to your account across devices.') }><CircleHelp size={18} /></button><UserProfile /><SignOutAction /></div>
         </header>
         <div className="page-content">
           <section className="welcome-row">
@@ -338,6 +467,50 @@ function RosterManager() {
             <div className="summary-intro"><div className="summary-icon"><Users size={18} /></div><div><strong>{rosterAgents.length} collaborators</strong><span>Your crew, in one place</span></div></div><div className="summary-divider" />
             {(['Ready', 'Working', 'Away'] as AgentStatus[]).map((status) => <div className="summary-stat" key={status} data-testid={`summary-${status.toLowerCase()}`}><span className={`status-pip ${status.toLowerCase()}`} /><strong>{counts[status]}</strong><span>{status}</span></div>)}
             <div className="summary-note"><Sparkles size={14} /> Set each status as your day changes</div>
+          </section>
+          <section className="task-section" id="work-queue">
+            <div className="section-heading task-section-heading">
+              <div>
+                <div className="eyebrow small-eyebrow">KEEP WORK MOVING</div>
+                <h2>Work queue<span className="heading-period">.</span></h2>
+                <p className="section-note">A personal queue for work you’ll handle in each assistant’s own workspace.</p>
+              </div>
+              <Button className="add-agent-button" onClick={openCreateTask} disabled={isTaskSaving} data-testid="button-add-task"><Plus size={17} /> Add task</Button>
+            </div>
+            {taskError && <div className="save-banner" role="alert" data-testid="status-task-error">{taskError}<button onClick={() => setTaskError('')} aria-label="Dismiss task error"><X size={14} /></button></div>}
+            {tasksQuery.isLoading ? <div className="work-state" data-testid="status-tasks-loading"><LoaderCircle className="spin" size={17} /> Loading your work queue…</div>
+              : tasksQuery.isError ? <div className="work-state work-error" role="alert" data-testid="status-tasks-error"><span>Your tasks couldn’t load.</span><Button variant="outline" onClick={() => void tasksQuery.refetch()} data-testid="button-retry-tasks">Try again</Button></div>
+                : <div className="task-board" data-testid="task-board">
+                  {taskStatuses.map((status) => {
+                    const laneTasks = tasks.filter((task) => task.status === status);
+                    const statusClass = status.toLowerCase().replace(' ', '-');
+                    return (
+                      <div className={`task-lane lane-${statusClass}`} key={status} data-testid={`task-lane-${statusClass}`}>
+                        <div className="task-lane-heading"><span className={`lane-marker ${statusClass}`} /><strong>{status}</strong><span className="lane-count">{laneTasks.length}</span></div>
+                        {laneTasks.length ? <div className="task-list">
+                          {laneTasks.map((task) => (
+                            <article className="task-card" key={task.id} data-testid={`card-task-${task.id}`}>
+                              <div className="task-card-top">
+                                <span className={`priority-chip priority-${task.priority.toLowerCase()}`}>{task.priority} priority</span>
+                                <div className="task-card-actions">
+                                  <button aria-label={`Edit ${task.title}`} onClick={() => openEditTask(task)} disabled={isTaskSaving} data-testid={`button-edit-task-${task.id}`}><Edit3 size={14} /></button>
+                                  <button aria-label={`Remove ${task.title}`} onClick={() => removeTask(task)} disabled={isTaskSaving} data-testid={`button-remove-task-${task.id}`}><Trash2 size={14} /></button>
+                                </div>
+                              </div>
+                              <h3 data-testid={`text-task-title-${task.id}`}>{task.title}</h3>
+                              {task.details && <p className="task-details">{task.details}</p>}
+                              <div className="task-assignee"><Users size={13} /><span>{task.assignedAgentId ? agentNames.get(task.assignedAgentId) ?? 'Unassigned' : 'Unassigned'}</span></div>
+                              <label className="task-status-control"><span>Move to</span><select value={task.status} disabled={isTaskSaving} onChange={(event) => changeTaskStatus(task, event.target.value as TaskStatus)} aria-label={`Move ${task.title} to another status`} data-testid={`select-task-status-${task.id}`}>
+                                {taskStatuses.map((option) => <option key={option} value={option}>{option}</option>)}
+                              </select></label>
+                            </article>
+                          ))}
+                        </div> : <div className="lane-empty">{tasks.length ? 'Nothing in this lane.' : 'Add a task to get started.'}</div>}
+                      </div>
+                    );
+                  })}
+                </div>}
+            <div className="task-section-foot"><span><Check size={13} /> Tasks stay here until you update them.</span><span>{tasks.filter((task) => task.status !== 'Done').length} open · {tasks.filter((task) => task.status === 'Done').length} done</span></div>
           </section>
           <section className="roster-section">
             <div className="section-heading"><div><div className="eyebrow small-eyebrow">THE ROSTER</div><h2>Meet your collaborators<span className="heading-period">.</span></h2></div><Button className="add-agent-button" onClick={openCreate} disabled={isSaving} data-testid="button-add-agent"><Plus size={17} /> Add collaborator</Button></div>
@@ -351,13 +524,27 @@ function RosterManager() {
             {visibleAgents.length > 0 ? <div className={`agent-grid ${view === 'list' ? 'list-view' : ''}`} data-testid="agent-roster">
               {visibleAgents.map((agent, index) => <article className={`agent-card ${agent.color}`} key={agent.id} data-testid={`card-agent-${agent.id}`} style={{ animationDelay: `${index * 45}ms` }}>
                 <div className="card-topline"><div className={`agent-avatar ${agent.color}`}><span>{agent.name.split(/\s+/).map((part) => part[0]).join('').slice(0, 2)}</span><Sparkles className="avatar-star" size={12} /></div><div className="card-actions"><button aria-label={`Edit ${agent.name}`} onClick={() => openEdit(agent)} disabled={isSaving} data-testid={`button-edit-${agent.id}`}><Edit3 size={15} /></button><button aria-label={`Remove ${agent.name}`} onClick={() => removeAgent(agent)} disabled={isSaving} data-testid={`button-remove-${agent.id}`}><Trash2 size={15} /></button></div></div>
-                <div className="agent-identity"><div className="agent-name-line"><h3 data-testid={`text-agent-name-${agent.id}`}>{agent.name}</h3><span className="agent-type">AI</span></div><p data-testid={`text-agent-role-${agent.id}`}>{agent.role || 'A collaborator in your room.'}</p></div>
+                <div className="agent-identity"><div className="agent-name-line"><h3 data-testid={`text-agent-name-${agent.id}`}>{agent.name}</h3><span className="agent-type">AI</span></div><p data-testid={`text-agent-role-${agent.id}`}>{agent.role || 'A collaborator in your room.'}</p>{safeLaunchUrl(agent.launchUrl) ? <a className="agent-launch-link" href={safeLaunchUrl(agent.launchUrl)!} target="_blank" rel="noopener noreferrer" data-testid={`link-launch-agent-${agent.id}`}><ExternalLink size={13} /> Open assistant</a> : <button type="button" className="agent-launch-link agent-launch-setup" onClick={() => openEdit(agent)} disabled={isSaving} data-testid={`button-set-launch-${agent.id}`}><ExternalLink size={13} /> Add launch link</button>}</div>
                 <div className="card-footer"><label className="status-select-label"><span className={`status-pip ${agent.status.toLowerCase()}`} /><select value={agent.status} disabled={isSaving} onChange={(event) => updateStatus(agent, event.target.value as AgentStatus)} aria-label={`Set ${agent.name} status`} data-testid={`select-status-${agent.id}`}><option>Ready</option><option>Working</option><option>Away</option></select><ChevronDown size={13} /></label><span className="status-footnote">{isSaving ? 'SYNCING…' : 'MANUALLY SET'}</span></div>
               </article>)}
             </div> : <div className="empty-state" data-testid="empty-roster"><div className="empty-art"><Search size={22} /></div><h3>{rosterAgents.length ? 'No collaborators found' : 'Your room is ready'}</h3><p>{rosterAgents.length ? 'Try another name or clear your status filter.' : 'Add someone to start shaping your own little AI crew.'}</p>{rosterAgents.length ? <Button variant="outline" onClick={() => { setSearch(''); setFilter('All agents'); }} data-testid="button-reset-filters">Clear filters</Button> : <Button className="add-agent-button" onClick={openCreate} data-testid="button-add-first-agent"><Plus size={17} /> Add your first collaborator</Button>}</div>}
             <div className="roster-foot"><div><span className="foot-dot" /> <strong>{isSaving ? 'Saving your room…' : 'All here, all yours.'}</strong> A little order for a lot of possibility.</div><span>{rosterAgents.length} of {Math.max(12, rosterAgents.length)} shown</span></div>
           </section>
-          <footer className="page-footer"><span>COMMONROOM <span>·</span> YOUR PERSONAL AI ROSTER</span><span>Private to your account. Ready on your next device.</span></footer>
+          <section className="activity-section" id="activity-feed">
+            <div className="activity-heading"><div><div className="eyebrow small-eyebrow">A RUNNING RECORD</div><h2>Recent activity<span className="heading-period">.</span></h2></div><span className="activity-updates"><Clock3 size={14} /> Updates across your room</span></div>
+            {activityQuery.isLoading ? <div className="activity-state" data-testid="status-activity-loading"><LoaderCircle className="spin" size={16} /> Loading recent activity…</div>
+              : activityQuery.isError ? <div className="activity-state activity-error" role="alert" data-testid="status-activity-error">Activity couldn’t load. <Button variant="outline" onClick={() => void activityQuery.refetch()} data-testid="button-retry-activity">Try again</Button></div>
+                : activityEvents.length ? <div className="activity-feed" data-testid="activity-feed">
+                  {activityEvents.slice(0, 8).map((event) => (
+                    <div className="activity-item" key={event.id} data-testid={`activity-event-${event.id}`}>
+                      <span className={`activity-mark ${event.kind === 'TaskCompleted' ? 'completed' : event.kind === 'TaskDeleted' ? 'removed' : ''}`}>{event.kind === 'TaskCompleted' ? <Check size={14} /> : event.kind === 'TaskDeleted' ? <Trash2 size={13} /> : <Clock3 size={13} />}</span>
+                      <span className="activity-message">{event.message}</span>
+                      <time dateTime={event.createdAt}>{formatActivityTime(event)}</time>
+                    </div>
+                  ))}
+                </div> : <div className="activity-empty" data-testid="empty-activity">Updates will appear here as you manage your roster and tasks.</div>}
+          </section>
+          <footer className="page-footer"><span>COMMONROOM <span>·</span> YOUR PERSONAL AI WORKSPACE</span><span>Private to your account. Ready on your next device.</span></footer>
         </div>
       </main>
       <Dialog open={dialogOpen} onOpenChange={setDialogOpen}><DialogContent className="agent-dialog">
@@ -365,8 +552,23 @@ function RosterManager() {
         <Form {...form}><form onSubmit={form.handleSubmit(saveAgent)} className="agent-form">
           <FormField control={form.control} name="name" render={({ field }) => <FormItem><FormLabel>Name</FormLabel><FormControl><Input placeholder="e.g. Research partner" {...field} data-testid="input-agent-name" /></FormControl><FormMessage /></FormItem>} />
           <FormField control={form.control} name="role" render={({ field }) => <FormItem><FormLabel>Role or notes <span className="optional-label">OPTIONAL</span></FormLabel><FormControl><Textarea placeholder="What do you bring this collaborator in for?" rows={3} {...field} data-testid="input-agent-role" /></FormControl><FormMessage /></FormItem>} />
+          <FormField control={form.control} name="launchUrl" render={({ field }) => <FormItem><FormLabel>Assistant link <span className="optional-label">OPTIONAL</span></FormLabel><FormControl><Input type="url" placeholder="https://…" {...field} data-testid="input-agent-launch-url" /></FormControl><FormMessage /></FormItem>} />
           <FormField control={form.control} name="status" render={({ field }) => <FormItem><FormLabel>Today’s status</FormLabel><FormControl><select className="form-status" {...field} data-testid="select-agent-status"><option>Ready</option><option>Working</option><option>Away</option></select></FormControl><FormMessage /></FormItem>} />
           <div className="dialog-actions"><Button type="button" variant="outline" onClick={() => setDialogOpen(false)} data-testid="button-cancel-agent">Cancel</Button><Button type="submit" disabled={isSaving} className="add-agent-button" data-testid="button-save-agent">{isSaving ? <LoaderCircle size={15} className="spin" /> : <Check size={16} />} {isSaving ? 'Saving…' : editing ? 'Save changes' : 'Add to my room'}</Button></div>
+        </form></Form>
+      </DialogContent></Dialog>
+      <Dialog open={taskDialogOpen} onOpenChange={setTaskDialogOpen}><DialogContent className="agent-dialog task-dialog">
+        <DialogHeader><div className="dialog-kicker">{editingTask ? 'MAKE AN UPDATE' : 'ADD TO THE QUEUE'}</div><DialogTitle>{editingTask ? 'Edit task' : 'Add a task'}</DialogTitle><DialogDescription>Keep a note of the work you want to move forward with an AI collaborator.</DialogDescription></DialogHeader>
+        <Form {...taskForm}><form onSubmit={taskForm.handleSubmit(saveTask)} className="agent-form">
+          <FormField control={taskForm.control} name="title" render={({ field }) => <FormItem><FormLabel>Task</FormLabel><FormControl><Input placeholder="e.g. Compare three product directions" {...field} data-testid="input-task-title" /></FormControl><FormMessage /></FormItem>} />
+          <FormField control={taskForm.control} name="details" render={({ field }) => <FormItem><FormLabel>Details <span className="optional-label">OPTIONAL</span></FormLabel><FormControl><Textarea placeholder="Add a little context for yourself…" rows={3} {...field} data-testid="input-task-details" /></FormControl><FormMessage /></FormItem>} />
+          <FormField control={taskForm.control} name="assignedAgentId" render={({ field }) => <FormItem><FormLabel>Collaborator</FormLabel><FormControl><select className="form-status" {...field} data-testid="select-task-agent"><option value="">Unassigned</option>{rosterAgents.map((agent) => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</select></FormControl><FormMessage /></FormItem>} />
+          <div className="task-form-row">
+            <FormField control={taskForm.control} name="status" render={({ field }) => <FormItem><FormLabel>Status</FormLabel><FormControl><select className="form-status" {...field} data-testid="select-task-form-status">{taskStatuses.map((status) => <option key={status} value={status}>{status}</option>)}</select></FormControl><FormMessage /></FormItem>} />
+            <FormField control={taskForm.control} name="priority" render={({ field }) => <FormItem><FormLabel>Priority</FormLabel><FormControl><select className="form-status" {...field} data-testid="select-task-priority">{taskPriorities.map((priority) => <option key={priority} value={priority}>{priority}</option>)}</select></FormControl><FormMessage /></FormItem>} />
+          </div>
+          {taskError && <p className="task-form-error" role="alert" data-testid="status-task-form-error">{taskError}</p>}
+          <div className="dialog-actions"><Button type="button" variant="outline" onClick={() => setTaskDialogOpen(false)} data-testid="button-cancel-task">Cancel</Button><Button type="submit" disabled={isTaskSaving} className="add-agent-button" data-testid="button-save-task">{isTaskSaving ? <LoaderCircle size={15} className="spin" /> : <Check size={16} />} {isTaskSaving ? 'Saving…' : editingTask ? 'Save task' : 'Add to queue'}</Button></div>
         </form></Form>
       </DialogContent></Dialog>
     </div>
